@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="" xml:lang="">
+  <head>
+    <title>How Did I Do That?: Redesigning A  Workflow In R</title>
+    <meta charset="utf-8" />
+    <meta name="author" content="Edgar Zamora" />
+    <meta name="date" content="2021-06-05" />
+    <script src="libs/header-attrs-2.1/header-attrs.js"></script>
+    <link href="libs/remark-css-0.0.1/default.css" rel="stylesheet" />
+    <link href="libs/panelset-0.2.6/panelset.css" rel="stylesheet" />
+    <script src="libs/panelset-0.2.6/panelset.js"></script>
+    <link rel="stylesheet" href="css/nhsr.css" type="text/css" />
+    <link rel="stylesheet" href="css/nhsr-fonts.css" type="text/css" />
+  </head>
+  <body>
+    <textarea id="source">
+
+
+
+
+class: title-slide, left, bottom
+
+# How Did I Do That?: Redesigning A &lt;br&gt;Workflow In R
+----
+## **Edgar Zamora**
+### Big Bend Community College
+### June 5, 2021
+
+
+---
+
+class: center, middle, inverse
+
+# Agenda
+
+----
+
+.center[
+Identifying the Gaps 🔎
+]
+
+
+.center[
+Connecting to databases with `{dbplyr}` 💾
+]
+
+
+.center[
+Importing and transforming 🤠
+]
+
+
+.center[
+Building the report 📄 🧶
+]
+
+.center[
+Conclusion 🙋
+]
+
+---
+# Identifying the Gaps 🔎
+
+----
+
+--
+### Previous Workflow
+&lt;img src="img/previous_workflow.png" width="75%" /&gt;
+
+--
+### Redesigned Workflow
+&lt;img src="img/new_workflow.png" width="75%" /&gt;
+
+
+---
+# Connecting to databases with `{dbplyr}` 💾
+
+### Making a connection
+
+- `con` is the connection that will be used to access the database.
+- Multiple connections can be created but you will have to have different names for each connection.
+
+&lt;br&gt;
+
+
+```r
+library(dbplyr)
+library(DBI)
+library(odbc)
+
+# ODBC connection (e.g. Access)
+con &lt;- dbConnect(odbc::odbc(), "name_of_connection")
+
+# RSQLite
+con &lt;- DBI::dbConnect(RSQLite::SQLite(), dbname = ":memory:")
+```
+
+
+---
+# `{dbplyr}` continued
+
+.panelset[
+.panel[.panel-name[Writing some R ]
+
+- Most `dplyr` verbs can be translated into their SQL equivalents.  
+- When writing `dplyr` verbs you can use them before and/or after collecting the results. 
+  * The size of the database will help guide your decision. 
+
+
+```r
+dbplyr::tbl(con, "Class") %&gt;% 
+  filter(YEAR == "B90",
+         DEPT_DIV %in% c("POLS&amp;", "CHEM&amp;", "ENGL&amp;")) %&gt;% 
+  select(YEAR, DEPT_DIV, COURSE_NUM, ENR_TOTAL) %&gt;% 
+  group_by(YEAR, DEPT_DIV) %&gt;% 
+  summarise(total_enr = sum(ENR_TOTAL, na.rm = T)) %&gt;% 
+  dplyr::collect() %&gt;% 
+  janitor::clean_name()
+```
+
+]
+
+.panel[.panel-name[Results]
+
+- After using `collect()` we see the traditional tibble format for the dataframe.
+- Depending on how your database is setup, you may have to fix up some of the column names.
+  * This is quickly down with the `clean_names()` function from the `{janitor}` package.
+
+
+```r
+#`summarise()` has grouped output by 'YEAR'. You can override using the `.groups` argument.
+# A tibble: 3 x 3
+# Groups:   YEAR [1]
+  YEAR  DEPT_DIV total_enr
+  &lt;chr&gt; &lt;chr&gt;        &lt;dbl&gt;
+1 B90   CHEM&amp;          527
+2 B90   ENGL&amp;         1436
+3 B90   POLS&amp;          239
+```
+
+]
+]
+
+
+---
+# Importing and visualizing 📊
+
+.panelset[
+
+.panel[.panel-name[More `{dplyr}`]
+
+
+```r
+class_summary &lt;- tbl(con, "Class") %&gt;% 
+  filter(YEAR %in% c("B89", "B90"), QUARTER %in% c("1", "2")) %&gt;% 
+  select(YEAR, QUARTER, DEPT_DIV, ENR_TOTAL) %&gt;% 
+  collect() %&gt;% 
+  janitor::clean_names() %&gt;% 
+  group_by(year, quarter, dept_div) %&gt;% 
+  summarise(
+    total_enr = sum(enr_total, na.rm = T)
+  ) %&gt;% 
+  ungroup() %&gt;% 
+  group_by(year, quarter) %&gt;% 
+  arrange(desc(total_enr)) %&gt;% 
+  slice(1:5) %&gt;% 
+  mutate(quarter = case_when(quarter == "2" ~ "Fall",
+                             TRUE ~ "Winter"),
+         year = case_when(year == "B89" ~ "2018-19",
+                          TRUE ~ "2019-20")) %&gt;% 
+  arrange(year, quarter)
+```
+]
+
+
+.panel[.panel-name[Visualizing]
+
+
+.pull-left[
+
+- If your report includes tables, there are many packages (e.g `{gt}`, `{flextable}`, `{kable}`...) that can help.
+
+
+```r
+class_summary %&gt;%
+  pivot_wider(names_from = c(year, quarter), 
+              values_from = total_enr) %&gt;%
+  arrange(dept_div) %&gt;%
+  gt() %&gt;%
+  fmt_missing(
+    columns = 2:5,
+    missing_text = 0
+  )
+```
+
+]
+
+.pull-right[
+
+- Visualizing data using data from a database connection is no different than working with the `mtcars` dataset.
+
+
+
+```r
+class_summary %&gt;%
+  ggplot(aes(dept_div, total_enr, fill = quarter)) +
+  geom_col(position = position_dodge()) +
+  labs(
+    x = "Department",
+    y = "Enrollment"
+  ) +
+  scale_y_continuous(limits = c(0, 600)) +
+  facet_wrap(~year) +
+  theme_classic()
+```
+]
+]
+]
+
+
+
+---
+# Building the report 📄 🧶
+
+- To report out I used the {rmarkdown} and {bookdown} packages. Each offers consistent and reproducible ways to report out.
+
+- {bookdown} builds on {rmarkdown} so if you use the latter learning {bookdown} will be straight forward.
+  
+- {bookdown} offers the ability to create a single document instead of the traditional format. Using `pdf_document2()` in the YAML metadata will produce this format.
+
+
+---
+# Reporting syntax
+
+.panelset[
+.panel[.panel-name[Metadata]
+
+
+```r
+---
+  title: "How Did I Do That?: Redesigning A Workflow In R"
+  site: bookdown:bookdown_site
+  knit: "bookdown:render_book"
+  mainfont: Calibri Light
+  indent: yes
+  urlcolor: blues
+---  
+```
+
+]
+
+.panel[.panel-name[YAML]
+
+
+```r
+bookdown::pdf_document2: # allows for a single document
+  toc: FALSE
+  includes: 
+    in_header: preable.tex #where you include your latex specific packages
+  latex_engine: xelatex # will need to have {tidytext} installed
+  dev: "cairo_pdf"
+```
+
+]
+]
+
+
+
+---
+# Conclusion 🙋
+
+- There is going to be upfront work but the payoff is tremendous.
+
+- The ability to avoid human error is reduced since you do not need to jump between programs.
+
+- Next time will simply consist of rerunning your code instead of spending time trying to remember what you did.
+
+- Ability take your workflow further by incorporating `{purrr}`, `{shiny}`, and package development. 
+
+
+
+---
+# Acknowledgements &amp; Resources
+
+- `{xaringan}`: &lt;a href ="https://github.com/ivelasq/bookclub-dsieur/blob/main/R/2021-03-31/Walkthrough%204.Rmd"&gt;Isabella Velásquez&lt;/a&gt;
+- `{dbplyr}`: 
+  - &lt;a href ="https://sciencificity-blog.netlify.app/posts/2021-03-27-sql-in-rmarkdown/"&gt;Vebash Naidoo&lt;/a&gt;
+    * &lt;a href ="https://github.com/tidyverse/dbplyr/tree/master/R"&gt;GitHub Repo&lt;/a&gt;
+- SQL: 
+  - &lt;a href ="https://sciencificity-blog.netlify.app/posts/2021-03-27-sql-in-rmarkdown/"&gt;Vebash Naidoo&lt;/a&gt;
+  - &lt;a href ="https://github.com/ianmcook/tidyquery"&gt;tidyquery&lt;/a&gt;
+  - Visualizing `*_joins()` with &lt;a href ="https://www.garrickadenbuie.com/project/tidyexplain/"&gt;Garrick Aden‑Buie&lt;/a&gt;
+- Sharla Gelfand - &lt;a href ="https://www.rstudio.com/speakers/sharla-gelfand/"&gt;RStudioConf&lt;/a&gt;
+
+---
+class: center, middle, inverse
+
+
+.center[
+&lt;p style="font-size:60px"&gt;Thank You!!!&lt;/p&gt;
+]
+
+
+    </textarea>
+<style data-target="print-only">@media screen {.remark-slide-container{display:block;}.remark-slide-scaler{box-shadow:none;}}</style>
+<script src="https://remarkjs.com/downloads/remark-latest.min.js"></script>
+<script>var slideshow = remark.create({
+"highlightStyle": "tomorrow-night",
+"highlightLines": true,
+"highlightLanguage": "r",
+"countIncrementalSlides": false,
+"ratio": "16:9"
+});
+if (window.HTMLWidgets) slideshow.on('afterShowSlide', function (slide) {
+  window.dispatchEvent(new Event('resize'));
+});
+(function(d) {
+  var s = d.createElement("style"), r = d.querySelector(".remark-slide-scaler");
+  if (!r) return;
+  s.type = "text/css"; s.innerHTML = "@page {size: " + r.style.width + " " + r.style.height +"; }";
+  d.head.appendChild(s);
+})(document);
+
+(function(d) {
+  var el = d.getElementsByClassName("remark-slides-area");
+  if (!el) return;
+  var slide, slides = slideshow.getSlides(), els = el[0].children;
+  for (var i = 1; i < slides.length; i++) {
+    slide = slides[i];
+    if (slide.properties.continued === "true" || slide.properties.count === "false") {
+      els[i - 1].className += ' has-continuation';
+    }
+  }
+  var s = d.createElement("style");
+  s.type = "text/css"; s.innerHTML = "@media print { .has-continuation { display: none; } }";
+  d.head.appendChild(s);
+})(document);
+// delete the temporary CSS (for displaying all slides initially) when the user
+// starts to view slides
+(function() {
+  var deleted = false;
+  slideshow.on('beforeShowSlide', function(slide) {
+    if (deleted) return;
+    var sheets = document.styleSheets, node;
+    for (var i = 0; i < sheets.length; i++) {
+      node = sheets[i].ownerNode;
+      if (node.dataset["target"] !== "print-only") continue;
+      node.parentNode.removeChild(node);
+    }
+    deleted = true;
+  });
+})();
+(function() {
+  "use strict"
+  /* Replace <script> tags in slides area to make them executable
+   *
+   * Runs after post-processing of markdown source into slides and replaces only
+   * <script>s on the last slide of continued slides using the .has-continuation
+   * class added by xaringan. Finally, any <script>s in the slides area that
+   * aren't executed are commented out.
+   */
+  var scripts = document.querySelectorAll(
+    '.remark-slides-area .remark-slide-container:not(.has-continuation) script'
+  );
+  if (!scripts.length) return;
+  for (var i = 0; i < scripts.length; i++) {
+    var s = document.createElement('script');
+    var code = document.createTextNode(scripts[i].textContent);
+    s.appendChild(code);
+    scripts[i].parentElement.replaceChild(s, scripts[i]);
+  }
+  var scriptsNotExecuted = document.querySelectorAll(
+    '.remark-slides-area .remark-slide-container.has-continuation script'
+  );
+  if (!scriptsNotExecuted.length) return;
+  for (var i = 0; i < scriptsNotExecuted.length; i++) {
+    var comment = document.createComment(scriptsNotExecuted[i].outerHTML)
+    scriptsNotExecuted[i].parentElement.replaceChild(comment, scriptsNotExecuted[i])
+  }
+})();
+(function() {
+  var links = document.getElementsByTagName('a');
+  for (var i = 0; i < links.length; i++) {
+    if (/^(https?:)?\/\//.test(links[i].getAttribute('href'))) {
+      links[i].target = '_blank';
+    }
+  }
+})();
+// adds .remark-code-has-line-highlighted class to <pre> parent elements
+// of code chunks containing highlighted lines with class .remark-code-line-highlighted
+(function(d) {
+  const hlines = d.querySelectorAll('.remark-code-line-highlighted');
+  const preParents = [];
+  const findPreParent = function(line, p = 0) {
+    if (p > 1) return null; // traverse up no further than grandparent
+    const el = line.parentElement;
+    return el.tagName === "PRE" ? el : findPreParent(el, ++p);
+  };
+
+  for (let line of hlines) {
+    let pre = findPreParent(line);
+    if (pre && !preParents.includes(pre)) preParents.push(pre);
+  }
+  preParents.forEach(p => p.classList.add("remark-code-has-line-highlighted"));
+})(document);</script>
+<!--Hat-tip: https://www.garrickadenbuie.com/blog/xaringan-tip-logo-all-slides/-->
+<style>
+.logo {
+  background-image: url(img/cascadia_21_logo.png);
+  background-size: contain;
+  background-repeat: no-repeat;
+  position: absolute;
+  top: 1em;
+  right: 1em;
+  width: 110px;
+  height: 128px;
+  z-index: 0;
+}
+</style>
+
+<script>
+document
+  .querySelectorAll(
+    '.remark-slide-content' +
+    ':not(.title-slide)' +
+    // add additional classes to exclude here, e.g.
+    ':not(.inverse)' +
+    ':not(.hide-logo)'
+  )
+  .forEach(el => {
+    el.innerHTML += '<div class="logo"></div>';
+  });
+</script>
+
+<script>
+slideshow._releaseMath = function(el) {
+  var i, text, code, codes = el.getElementsByTagName('code');
+  for (i = 0; i < codes.length;) {
+    code = codes[i];
+    if (code.parentNode.tagName !== 'PRE' && code.childElementCount === 0) {
+      text = code.textContent;
+      if (/^\\\((.|\s)+\\\)$/.test(text) || /^\\\[(.|\s)+\\\]$/.test(text) ||
+          /^\$\$(.|\s)+\$\$$/.test(text) ||
+          /^\\begin\{([^}]+)\}(.|\s)+\\end\{[^}]+\}$/.test(text)) {
+        code.outerHTML = code.innerHTML;  // remove <code></code>
+        continue;
+      }
+    }
+    i++;
+  }
+};
+slideshow._releaseMath(document);
+</script>
+<!-- dynamically load mathjax for compatibility with self-contained -->
+<script>
+(function () {
+  var script = document.createElement('script');
+  script.type = 'text/javascript';
+  script.src  = 'https://mathjax.rstudio.com/latest/MathJax.js?config=TeX-MML-AM_CHTML';
+  if (location.protocol !== 'file:' && /^https?:/.test(script.src))
+    script.src  = script.src.replace(/^https?:/, '');
+  document.getElementsByTagName('head')[0].appendChild(script);
+})();
+</script>
+  </body>
+</html>
